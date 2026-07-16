@@ -1,0 +1,148 @@
+#!/bin/ksh
+
+# Copyright (c) 2016 Todd T. Fries <todd@fries.net>
+#
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+#
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+me=$0
+me=${me##*/}
+
+export TMPDIR=/$(hostname -s).a/tmp
+build=0
+verbose=0
+datadir=$HOME/var/db
+dbname=allnbsd.database
+
+# /5 is a general rule of thumb
+sortmem=$(echo "$(sysctl -n hw.physmem)/1024/1024/5"|bc)
+sortmaxmem=2048
+sortmaxmem=1024
+if [ sortmem -gt sortmaxmem ]; then
+	sortmem=$sortmaxmem
+fi
+export sort="env LC_ALL=C sort -H -S ${sortmem}M -T $TMPDIR"
+
+td=$(mktemp -d $TMPDIR/.${me}.XXXXXXXXXXXXXXXXXXXX)
+trap 'rm -rf $td $tmpwrite' 0 1 2 3 13 15
+
+cachedir=$HOME/.cache/${me}
+
+cd $datadir || exit 1
+
+while [ "$1" ]
+do
+	case "$1" in
+	-B) build=1;;
+	-v) let verbose=verbose+1;;
+	*) break;;
+	esac
+	shift
+done
+
+if [ build -eq 0 ]; then
+	exec locate -d $datadir/$dbname "$@"
+fi
+
+
+mkdir -p $cachedir
+
+. $HOME/bin/locate-cksys
+
+compress() {
+	xz -9
+}
+rclone_lsrmt() {
+	local rmt="$1" rdir="$2"
+	rclone lsd $rmt:"$rdir" | \
+		awk -v rdir="$rdir" '{
+			if (length(rdir)>0) {
+				printf "%s/", rdir;
+			}
+			printf "%s/\n", $5, type
+		}'
+}
+
+rclone_cache_dir() {
+	local rmt="$1" rdir="$2"
+	local d="$rdir"
+	local dname="$(echo "$d"|sed 's,/,_,g')"
+	local cfilebase="${dname}.xz"
+	echo "caching rmt dir $d to cache/$cfilebase"
+	rclone lsl $rmt:${d} 2> /dev/null | \
+	rclone_mungeforlocate "$d" | \
+	tmpwrite="${cachedir}/.${cfilebase}"
+	compress > ${cachedir}/.${cfilebase} && \
+	mv -f ${cachedir}/.${cfilebase} ${cachedir}/${cfilebase} || exit 1
+	tmpwrite=""
+}
+	
+rclone_mungeforlocate() {
+	awk -v d="$1" '
+		{
+			gsub("-","",$2);
+			gsub(":","",$3);
+			gsub("\\.[0-9]+","",$3);
+			printf "%s%s|%x|%s/%s\n",$2,$3,$1,d,$4;
+		}'
+}
+
+
+# should be static, rm to refresh
+for path in $(rclone_lsrmt nb-https | egrep "^NetBSD-[0-9][0-9]*.[0-9].*/$")
+do
+	cksys
+	dname="$(echo "$path"|sed 's,/,_,g')"
+	if ! [ -f "$cachedir/${dname}.xz" ]; then
+		rclone_cache_dir nb-https "$path"
+	fi
+done
+
+# list archs
+for path in $(rclone_lsrmt nb-pkg-https)
+do
+	cksys
+	echo "pkg-https $path>"
+	for p2 in $(rclone_lsrmt nb-pkg-https $path)
+	do
+		ptmp="$path/$p2"
+		echo "pkg-https $ptmp>"
+		dname="$(echo "$ptmp"|sed 's,/,_,g')"
+		if ! [ -f $cachedir/${dname}.xz ]; then
+			rclone_cache_dir nb-pkg-https "$ptmp"
+		fi
+		exit 1
+	done
+done
+
+# update each time
+for path in {arch,NetBSD-{current,daily,release*},images,install-images,iso,misc,packages,releng,security,torrent}
+do
+	cksys
+	rclone_cache_dir nb-https "$path"
+done 
+for path in $(rclone_lsrmt nb-https NetBSD-archive/)
+do
+	cksys
+	dname="$(echo "$path"|sed 's,/,_,g')"
+	if ! [ -f $cachedir/NetBSD-archive_${dname}.xz ]; then
+		rclone_cache_dir nb-https "NetBSD-archive/$path"
+	fi
+done
+
+cksys
+tmpwrite=".$dbname"
+xzcat $cachedir/*.xz | \
+	$sort -u | \
+	/usr/libexec/locate.mklocatedb > .$dbname && \
+	mv -f .$dbname $dbname
+tmpwrite=""

@@ -70,6 +70,8 @@ addrpath "rsync://mirror.leaseweb.com/openbsd/"
 
 mkdir -p $cachedir
 
+. $HOME/bin/locate-cksys
+
 compress() {
 	xz -9
 }
@@ -150,6 +152,7 @@ rsync_mungeforlocate() {
 # should be static, rm to refresh
 for d in $(rclone_lsrmt | egrep "^[0-9].[0-9]/$")
 do
+	cksys
 	d=${d%*/}
 	dname="$(echo "$d"|sed 's,/,_,g')"
 	if ! [ -f $cachedir/${dname}.xz ]; then
@@ -165,9 +168,11 @@ stripall() {
 # update each time
 for path in {ftplist,timestamp,Changelogs,OpenSSH/portable,patches,snapshots}
 do
+	cksys
 	rsync_cache_dir "$path"
 done 
 
+cksys
 xzcat $cachedir/*.xz | \
 	$sort -u | \
 	/usr/libexec/locate.mklocatedb > .$dbname && \
