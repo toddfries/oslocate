@@ -23,6 +23,10 @@ locate_bootstrap 5 1024 "$apichangedate"
 dbname=allnbsd.database
 cachedir=$HOME/.cache/${me}
 
+# rclone remote names (see rclone.conf); layout differs from OpenBSD/oblocate.
+nb_release_rmt=${NB_RELEASE_RMT:-nb-https}
+nb_pkg_rmt=${NB_PKG_RMT:-nb-pkg-https}
+
 cd $datadir || exit 1
 
 while [ "$1" ]
@@ -42,34 +46,44 @@ fi
 pidfile_acquire
 mkdir -p $cachedir
 
+# ---------------------------------------------------------------------------
+# Helpers (same shape as oblocate; remote name is an argument for multi-rmt)
+# ---------------------------------------------------------------------------
+
 compress() {
 	xz -9
 }
+
+# List one level of directories on an rclone remote.
+# Usage: rclone_lsrmt <rmt> [subdir]
+# Prints basenames with trailing / (same as oblocate's rclone_lsrmt output style).
 rclone_lsrmt() {
-	local rmt="$1" rdir="$2"
-	rclone lsd $rmt:"$rdir" | \
-		awk -v rdir="$rdir" '{
-			if (length(rdir)>0) {
-				printf "%s/", rdir;
-			}
-			printf "%s/\n", $5, type
-		}'
+	local rmt="$1" rdir="${2:-}"
+	rclone lsd "$rmt:$rdir" | \
+		awk '{ printf "%s/\n", $5 }'
 }
 
+# Cache one remote directory as $cachedir/<sanitized_path>.xz
+# Usage: rclone_cache_dir <rmt> <relpath>
 rclone_cache_dir() {
-	local rmt="$1" rdir="$2"
-	local d="$rdir"
-	local dname="$(echo "$d"|sed 's,/,_,g')"
-	local cfilebase="${dname}.xz"
-	echo "caching rmt dir $d to cache/$cfilebase"
-	rclone lsl $rmt:${d} 2> /dev/null | \
-	rclone_mungeforlocate "$d" | \
-	tmpwrite="${cachedir}/.${cfilebase}"
-	compress > ${cachedir}/.${cfilebase} && \
-	mv -f ${cachedir}/.${cfilebase} ${cachedir}/${cfilebase} || exit 1
+	local rmt="$1" d="$2"
+	local dname
+
+	dname="$(echo "$d" | sed 's,/,_,g')"
+	echo "caching rmt dir $d"
+	tmpwrite="${cachedir}/.${dname}.xz"
+	rclone lsl "$rmt:$d" 2>/dev/null | \
+		rclone_mungeforlocate "$d" | \
+		compress > "$tmpwrite" && \
+		mv -f "$tmpwrite" "${cachedir}/${dname}.xz" || {
+			rm -f "$tmpwrite"
+			tmpwrite=""
+			exit 1
+		}
 	tmpwrite=""
 }
-	
+
+# Same record format as oblocate: date+time|size_hex|path
 rclone_mungeforlocate() {
 	awk -v d="$1" '
 		{
@@ -80,53 +94,73 @@ rclone_mungeforlocate() {
 		}'
 }
 
+# ---------------------------------------------------------------------------
+# NetBSD mirror walk (layout-specific)
+# ---------------------------------------------------------------------------
 
-# should be static, rm to refresh
-for path in $(rclone_lsrmt nb-https | egrep "^NetBSD-[0-9][0-9]*.[0-9].*/$")
+# Release trees (static once cached; rm shard to refresh)
+for d in $(rclone_lsrmt "$nb_release_rmt" | egrep "^NetBSD-[0-9][0-9]*\.[0-9]")
 do
 	cksys
-	dname="$(echo "$path"|sed 's,/,_,g')"
+	d=${d%/}
+	dname="$(echo "$d" | sed 's,/,_,g')"
 	if ! [ -f "$cachedir/${dname}.xz" ]; then
-		rclone_cache_dir nb-https "$path"
+		rclone_cache_dir "$nb_release_rmt" "$d"
 	fi
 done
 
-# list archs
-for path in $(rclone_lsrmt nb-pkg-https)
+# Package sets: two-level walk under nb-pkg-https (e.g. arch / set)
+# Fixed: old script had "exit 1" after the first pair, aborting the full -B.
+for d in $(rclone_lsrmt "$nb_pkg_rmt")
 do
 	cksys
-	echo "pkg-https $path>"
-	for p2 in $(rclone_lsrmt nb-pkg-https $path)
+	d=${d%/}
+	echo "pkg-https $d>"
+	for p2 in $(rclone_lsrmt "$nb_pkg_rmt" "$d")
 	do
-		ptmp="$path/$p2"
+		cksys
+		p2=${p2%/}
+		ptmp="$d/$p2"
 		echo "pkg-https $ptmp>"
-		dname="$(echo "$ptmp"|sed 's,/,_,g')"
-		if ! [ -f $cachedir/${dname}.xz ]; then
-			rclone_cache_dir nb-pkg-https "$ptmp"
+		dname="$(echo "$ptmp" | sed 's,/,_,g')"
+		if ! [ -f "$cachedir/${dname}.xz" ]; then
+			rclone_cache_dir "$nb_pkg_rmt" "$ptmp"
 		fi
-		exit 1
 	done
 done
 
-# update each time
-for path in {arch,NetBSD-{current,daily,release*},images,install-images,iso,misc,packages,releng,security,torrent}
+# Volatile / frequently updated top-level dirs (refresh every -B)
+for path in arch NetBSD-current NetBSD-daily images install-images \
+	iso misc packages releng security torrent
 do
 	cksys
-	rclone_cache_dir nb-https "$path"
-done 
-for path in $(rclone_lsrmt nb-https NetBSD-archive/)
+	rclone_cache_dir "$nb_release_rmt" "$path"
+done
+for path in $(rclone_lsrmt "$nb_release_rmt" | egrep '^NetBSD-release')
 do
 	cksys
-	dname="$(echo "$path"|sed 's,/,_,g')"
-	if ! [ -f $cachedir/NetBSD-archive_${dname}.xz ]; then
-		rclone_cache_dir nb-https "NetBSD-archive/$path"
+	path=${path%/}
+	rclone_cache_dir "$nb_release_rmt" "$path"
+done
+
+# Historic archive (static shards)
+for d in $(rclone_lsrmt "$nb_release_rmt" NetBSD-archive)
+do
+	cksys
+	d=${d%/}
+	dname="$(echo "NetBSD-archive_${d}" | sed 's,/,_,g')"
+	if ! [ -f "$cachedir/${dname}.xz" ]; then
+		rclone_cache_dir "$nb_release_rmt" "NetBSD-archive/$d"
 	fi
 done
 
+# ---------------------------------------------------------------------------
+# Assemble locate db (same pattern as oblocate; tmpwrite for trap cleanup)
+# ---------------------------------------------------------------------------
 cksys
 tmpwrite=".$dbname"
 xzcat $cachedir/*.xz | \
 	$sort -u | \
-	/usr/libexec/locate.mklocatedb > .$dbname && \
-	mv -f .$dbname $dbname
+	/usr/libexec/locate.mklocatedb > ".$dbname" && \
+	mv -f ".$dbname" "$dbname"
 tmpwrite=""
