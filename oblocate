@@ -14,27 +14,13 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-me=$0
-me=${me##*/}
+. "${0%/*}/locate-lib"
 
-export TMPDIR=/$(hostname -s).a/tmp
-build=0
-verbose=0
-datadir=$HOME/var/db
+# 2025-09-22 6e27309 hybrid rsync/rclone + per-dir xz cache and
+# date|size|path munge (was single allobsd.xz listing).
+apichangedate=1758567522
+locate_bootstrap 5 1024 "$apichangedate"
 dbname=allobsd.database
-
-# /5 is a general rule of thumb
-sortmem=$(echo "$(sysctl -n hw.physmem)/1024/1024/5"|bc)
-sortmaxmem=2048
-sortmaxmem=1024
-if [ sortmem -gt sortmaxmem ]; then
-	sortmem=$sortmaxmem
-fi
-export sort="env LC_ALL=C sort -H -S ${sortmem}M -T $TMPDIR"
-
-td=$(mktemp -d $TMPDIR/.${me}.XXXXXXXXXXXXXXXXXXXX)
-trap 'rm -rf $td' 0 1 2 3 13 15
-
 cachedir=$HOME/.cache/${me}
 
 cd $datadir || exit 1
@@ -50,9 +36,11 @@ do
 done
 
 if [ build -eq 0 ]; then
-	exec locate -d $datadir/$dbname "$@"
+	locate_search_one "$@"
 fi
 
+pidfile_acquire
+mkdir -p $cachedir
 
 RPATHS=""
 
@@ -69,8 +57,6 @@ addrpath "rsync://mirror.planetunix.net/OpenBSD/"
 addrpath "rsync://mirror.leaseweb.com/openbsd/"
 
 mkdir -p $cachedir
-
-. $HOME/bin/locate-cksys
 
 compress() {
 	xz -9
