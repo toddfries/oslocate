@@ -1,0 +1,4 @@
+INDEX
+subdir/
+big.tgz
+backup~

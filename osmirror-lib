@@ -1,0 +1,183 @@
+#!/bin/ksh
+# osmirror-lib — shared helpers for OpenBSD/NetBSD mirror → locate indexes.
+# Sourced (not executed). Pair with locate-lib for bootstrap/PIDFILE/cksys.
+#
+#	. "${0%/*}/osmirror-lib"
+#
+# Pure / offline-testable:
+#	osmirror_path_to_dname, osmirror_rclone_mungeforlocate,
+#	osmirror_rsync_mungeforlocate, osmirror_compress
+# Need network/cache vars ($cachedir, optional $RPATH):
+#	osmirror_rclone_lsrmt, osmirror_rclone_cache_dir,
+#	osmirror_rsync_lsrmt, osmirror_rsync_cache_dir,
+#	osmirror_pick_rsync, osmirror_assemble_db
+
+# ---------------------------------------------------------------------------
+# Offline-safe helpers
+# ---------------------------------------------------------------------------
+
+osmirror_compress() {
+	xz -9
+}
+
+# snapshots/amd64 -> snapshots_amd64
+osmirror_path_to_dname() {
+	echo "$1" | sed 's,/,_,g'
+}
+
+# stdin: rclone lsl lines → stdout: date+time|size_hex|prefix/name
+# $1 = path prefix for records (directory being listed)
+osmirror_rclone_mungeforlocate() {
+	awk -v d="$1" '
+		{
+			gsub("-","",$2);
+			gsub(":","",$3);
+			gsub("\\.[0-9]+","",$3);
+			printf "%s%s|%x|%s/%s\n",$2,$3,$1,d,$4;
+		}'
+}
+
+# stdin: rsync -rl listing → stdout: date+time|size_hex|prefix/name[/]
+# $1 = path prefix
+osmirror_rsync_mungeforlocate() {
+	awk -v d="$1" '
+	/\~$/		{next}
+	$5 ~ /^\.$/	{next}
+	! /^[-d]/	{next}
+	/^-/		{t=""}
+	/^d/		{t="/"}
+			{
+				gsub(",","",$2);
+				gsub("/","",$3);
+				gsub(":","",$4);
+				printf "%s%s|%x|%s/%s%s\n",$3,$4,$2,d,$5,t;
+			}'
+}
+
+# stdin: rclone lsd-like columns ($5 = name) → basenames with trailing /
+osmirror_rclone_lsd_basenames() {
+	awk '{ printf "%s/\n", $5 }'
+}
+
+# stdin: rsync list-only → name or name/
+osmirror_rsync_list_names() {
+	awk '{
+		type="/";
+		if (substr($1,1,1) == "-") {
+			type=""
+		};
+		if ($5 == ".") {
+			next
+		};
+		printf "%s%s\n", $5, type
+	}'
+}
+
+# ---------------------------------------------------------------------------
+# Cache I/O (needs $cachedir; uses tmpwrite for locate_cleanup if set)
+# ---------------------------------------------------------------------------
+
+# osmirror_rclone_cache_dir <rclone-remote> <relpath>
+osmirror_rclone_cache_dir() {
+	local rmt="$1" d="$2"
+	local dname
+
+	dname=$(osmirror_path_to_dname "$d")
+	echo "caching rmt dir $d"
+	tmpwrite="${cachedir}/.${dname}.xz"
+	rclone lsl "$rmt:$d" 2>/dev/null | \
+		osmirror_rclone_mungeforlocate "$d" | \
+		osmirror_compress > "$tmpwrite" && \
+		mv -f "$tmpwrite" "${cachedir}/${dname}.xz" || {
+			rm -f "$tmpwrite"
+			tmpwrite=""
+			return 1
+		}
+	tmpwrite=""
+	return 0
+}
+
+# osmirror_rsync_cache_dir <relpath>  (uses global $RPATH)
+osmirror_rsync_cache_dir() {
+	local d="$1"
+	local dname
+
+	dname=$(osmirror_path_to_dname "$d")
+	echo "caching rmt dir $d"
+	tmpwrite="${cachedir}/.${dname}.xz"
+	rsync --no-motd -rl --exclude='\.\~tmp\~' "$RPATH/${d}/." 2>/dev/null | \
+		osmirror_rsync_mungeforlocate "$d" | \
+		osmirror_compress > "$tmpwrite" && \
+		mv -f "$tmpwrite" "${cachedir}/${dname}.xz" || {
+			rm -f "$tmpwrite"
+			tmpwrite=""
+			return 1
+		}
+	tmpwrite=""
+	return 0
+}
+
+# List dirs: osmirror_rclone_lsrmt <rmt> [subdir]
+osmirror_rclone_lsrmt() {
+	local rmt="$1" rdir="${2:-}"
+	rclone lsd "$rmt:$rdir" | osmirror_rclone_lsd_basenames
+}
+
+# List names under $RPATH/$1
+osmirror_rsync_lsrmt() {
+	rsync --no-motd "$RPATH/$1" | osmirror_rsync_list_names
+}
+
+# Pick first rsync URL from "$@' that answers probe path. Sets RPATH.
+# Usage: osmirror_pick_rsync <probe-relpath> <url> [url ...]
+osmirror_pick_rsync() {
+	local probe="$1"
+	local p err
+	shift
+	err="@ERROR: max connections ([0-9]+) reached -- try again later"
+	RPATH=""
+	for p in "$@"; do
+		echo "Testing $p"
+		if [ "$(rsync --no-motd -l "$p/$probe" 2>&1 | egrep "$err")" ]; then
+			continue
+		fi
+		# also require some success (no fatal)
+		if rsync --no-motd -l "$p/$probe" >/dev/null 2>&1; then
+			RPATH="$p"
+			break
+		fi
+		# original oblocate only skipped on max-connections; keep that leniency:
+		RPATH="$p"
+		break
+	done
+	[ -n "$RPATH" ]
+}
+
+# Original oblocate pick: only skip max-connections errors (match historic behavior)
+osmirror_pick_rsync_obstyle() {
+	local probe="$1"
+	local p err
+	shift
+	err="@ERROR: max connections ([0-9]+) reached -- try again later"
+	RPATH=""
+	for p in "$@"; do
+		echo "Testing $p"
+		if [ "$(rsync --no-motd -l "$p/$probe" 2>&1 | egrep "$err")" ]; then
+			continue
+		fi
+		RPATH="$p"
+		break
+	done
+	[ -n "$RPATH" ]
+}
+
+# Merge all $cachedir/*.xz into locate db $1 (default $dbname)
+osmirror_assemble_db() {
+	local out=${1:-$dbname}
+	tmpwrite=".$out"
+	xzcat $cachedir/*.xz | \
+		$sort -u | \
+		/usr/libexec/locate.mklocatedb > ".$out" && \
+		mv -f ".$out" "$out"
+	tmpwrite=""
+}
