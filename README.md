@@ -19,11 +19,14 @@ So I created 'oblocate' to locate files in release directories of snapshots and 
 | `regress/run.sh` | Offline tests for helpers (`./regress/run.sh`) |
 
 ```
-./regress/run.sh          # must pass before commit
-oblocate -B               # rebuild OpenBSD index
-nblocate -B               # rebuild NetBSD index
-oblocate 'some-pkg'       # search
+git clone --recurse-submodules <url>   # or: git submodule update --init
+./regress/run.sh                       # must pass before commit
+oblocate -B                            # rebuild OpenBSD index
+nblocate -B                            # rebuild NetBSD index
+oblocate 'some-pkg'                    # search
 ```
+
+`locatelib` is a **git submodule** (`scm0.fdh.bz:/scm/locatelib.git`). Without `--recurse-submodules` / `submodule update --init`, `osmirror-driver` cannot source `locate-lib`.
 
 
 'locate' essentially takes a set of lines to stdin and makes it possible to search rapidly.
