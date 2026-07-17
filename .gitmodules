@@ -1,3 +1,3 @@
 [submodule "locatelib"]
 	path = locatelib
-	url = scm0.fdh.bz:/scm/locatelib.git
+	url = git@github.com:toddfries/locatelib.git
