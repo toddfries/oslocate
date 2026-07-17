@@ -7,7 +7,7 @@
 #
 # $0 remains the wrapper name (me/cache identity).
 
-. "${0%/*}/locate-lib"
+. "${0%/*}/locatelib/locate-lib"
 . "${0%/*}/osmirror-lib"
 
 prof=${OSMIRROR_PROFILE:-}

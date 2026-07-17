@@ -15,7 +15,7 @@ So I created 'oblocate' to locate files in release directories of snapshots and 
 | `osmirror-driver` | Shared `-B` / search / assemble |
 | `profiles/*.ksh` | OS-specific remotes, filters, walk |
 | `osmirror-lib` | Shared munge/cache helpers |
-| `locate-lib` | Symlink to `~/bin/locate-lib` (PIDFILE, cksys, …) |
+| `locatelib/` | git submodule → `scm0.fdh.bz:/scm/locatelib.git` (PIDFILE, cksys, …) |
 | `regress/run.sh` | Offline tests for helpers (`./regress/run.sh`) |
 
 ```

@@ -1,6 +1,6 @@
 #!/bin/ksh
 # osmirror-lib — shared helpers for OpenBSD/NetBSD mirror → locate indexes.
-# Sourced (not executed). Pair with locate-lib for bootstrap/PIDFILE/cksys.
+# Sourced (not executed). Pair with locatelib/locate-lib for bootstrap/PIDFILE/cksys.
 #
 #	. "${0%/*}/osmirror-lib"
 #
