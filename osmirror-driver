@@ -1,0 +1,52 @@
+#!/bin/ksh
+# Shared -B / search driver for OS mirror locate tools.
+# Invoked by thin wrappers that set OSMIRROR_PROFILE then source this file:
+#
+#	OSMIRROR_PROFILE=openbsd
+#	. "${0%/*}/osmirror-driver"
+#
+# $0 remains the wrapper name (me/cache identity).
+
+. "${0%/*}/locate-lib"
+. "${0%/*}/osmirror-lib"
+
+prof=${OSMIRROR_PROFILE:-}
+if [ -z "$prof" ]; then
+	echo "$0: OSMIRROR_PROFILE not set" >&2
+	exit 2
+fi
+proffile="${0%/*}/profiles/${prof}.ksh"
+if ! [ -f "$proffile" ]; then
+	echo "$0: missing profile $proffile" >&2
+	exit 2
+fi
+. "$proffile"
+
+apichangedate=${osmirror_apichangedate:-1758567522}
+locate_bootstrap 5 1024 "$apichangedate"
+dbname=${osmirror_dbname:-${me}.database}
+cachedir=$HOME/.cache/${me}
+
+cd $datadir || exit 1
+
+while [ "$1" ]
+do
+	case "$1" in
+	-B) build=1;;
+	-v) let verbose=verbose+1;;
+	*) break;;
+	esac
+	shift
+done
+
+if [ build -eq 0 ]; then
+	locate_search_one "$@"
+fi
+
+pidfile_acquire
+mkdir -p "$cachedir"
+
+osmirror_profile_walk
+
+cksys
+osmirror_assemble_db "$dbname"

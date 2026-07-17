@@ -1,10 +1,30 @@
-# oblocate
+# oblocate / nblocate
 
 Sometimes I want to know which OpenBSD release has what version of a given package.
 
 Sometimes I want to know packages that match a given name.
 
 So I created 'oblocate' to locate files in release directories of snapshots and past releases.
+**nblocate** does the same for **NetBSD** mirrors.
+
+## Layout (after merge)
+
+| Path | Role |
+|------|------|
+| `oblocate` / `nblocate` | Thin wrappers (`OSMIRROR_PROFILE=openbsd\|netbsd`) |
+| `osmirror-driver` | Shared `-B` / search / assemble |
+| `profiles/*.ksh` | OS-specific remotes, filters, walk |
+| `osmirror-lib` | Shared munge/cache helpers |
+| `locate-lib` | Symlink to `~/bin/locate-lib` (PIDFILE, cksys, …) |
+| `regress/run.sh` | Offline tests for helpers (`./regress/run.sh`) |
+
+```
+./regress/run.sh          # must pass before commit
+oblocate -B               # rebuild OpenBSD index
+nblocate -B               # rebuild NetBSD index
+oblocate 'some-pkg'       # search
+```
+
 
 'locate' essentially takes a set of lines to stdin and makes it possible to search rapidly.
 
