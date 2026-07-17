@@ -15,6 +15,7 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 . "${0%/*}/locate-lib"
+. "${0%/*}/osmirror-lib"
 
 # 2025-09-22 6e27309 hybrid rsync/rclone + per-dir xz cache and
 # date|size|path munge (was single allobsd.xz listing).
@@ -22,6 +23,10 @@ apichangedate=1758567522
 locate_bootstrap 5 1024 "$apichangedate"
 dbname=allobsd.database
 cachedir=$HOME/.cache/${me}
+
+# OpenBSD mirror config (thin data for future full driver)
+ob_rclone_rmt=${OB_RCLONE_RMT:-ob-http}
+ob_rsync_probe=${OB_RSYNC_PROBE:-snapshots/amd64/index.txt}
 
 cd $datadir || exit 1
 
@@ -42,111 +47,42 @@ fi
 pidfile_acquire
 mkdir -p $cachedir
 
-RPATHS=""
-
-addrpath() {
-	RPATHS="$1 $RPATHS"
-}
-
-# last takes precedence
-addrpath "rsync://mirror.esc7.net/openbsd"
-addrpath "rsync://ftp.spline.de/OpenBSD"
-addrpath "rsync://ftp.hostserver.de/OpenBSD"
-addrpath "rsync://ftp.usa.openbsd.org/ftp"
-addrpath "rsync://mirror.planetunix.net/OpenBSD/"
-addrpath "rsync://mirror.leaseweb.com/openbsd/"
-
-mkdir -p $cachedir
-
-compress() {
-	xz -9
-}
-rsync_lsrmt() {
-	rsync --no-motd $RPATH/"$1" | \
-	awk '{
-		type="/";
-		if (substr($1,1,1) == "-") {
-			type=""
-		};
-		if($5 == ".") {
-			next
-		};
-		printf "%s%s\n", $5, type}'
-}
+# Wrappers preserve historic call shapes (single path arg, fixed remote).
 rclone_lsrmt() {
-	rclone lsd ob-http:"$1" | \
-	awk '{
-		printf "%s/\n", $5, type}'
-}
-
-err="@ERROR: max connections ([0-9]+) reached -- try again later"
-for p in $RPATHS
-do
-	echo "Testing $p"
-	if [ "$(rsync --no-motd -l $p/snapshots/amd64/index.txt 2>&1 | egrep "$err")" ]
-	then
-		continue
-	fi
-	RPATH="$p"
-	break
-done
-
-rsync_cache_dir() {
-	local d="$1"
-	local dname="$(echo "$d"|sed 's,/,_,g')"
-	echo "caching rmt dir $d"
-	rsync --no-motd -rl --exclude='\.\~tmp\~' $RPATH/${d}/. 2> /dev/null | \
-	rsync_mungeforlocate "$d" | \
-	compress > ${cachedir}/.${dname}.xz && \
-	mv -f ${cachedir}/.${dname}.xz ${cachedir}/${dname}.xz || exit 1
+	osmirror_rclone_lsrmt "$ob_rclone_rmt" "$1"
 }
 rclone_cache_dir() {
-	local d="$1"
-	local dname="$(echo "$d"|sed 's,/,_,g')"
-	echo "caching rmt dir $d"
-	rclone lsl ob-http:${d} 2> /dev/null | \
-	rclone_mungeforlocate "$d" | \
-	compress > ${cachedir}/.${dname}.xz && \
-	mv -f ${cachedir}/.${dname}.xz ${cachedir}/${dname}.xz || exit 1
+	osmirror_rclone_cache_dir "$ob_rclone_rmt" "$1" || exit 1
 }
-	
-rclone_mungeforlocate() {
-	awk -v d="$1" '
-		{
-			gsub("-","",$2);
-			gsub(":","",$3);
-			gsub("\\.[0-9]+","",$3);
-			printf "%s%s|%x|%s/%s\n",$2,$3,$1,d,$4;
-		}'
+rsync_cache_dir() {
+	osmirror_rsync_cache_dir "$1" || exit 1
+}
+rsync_lsrmt() {
+	osmirror_rsync_lsrmt "$1"
 }
 
-rsync_mungeforlocate() {
-	awk -v d="$1" '
-	/\~$/		{next}
-	$5 ~ /^\.$/	{next}
-	! /^[-d]/	{next}
-	/^-/		{t=""}
-	/^d/		{t="/"}
-			{
-				gsub(",","",$2);
-				gsub("/","",$3);
-				gsub(":","",$4);
-				printf "%s%s|%x|%s/%s%s\n",$3,$4,$2,d,$5,t;
-			}'
-}
+# last takes precedence (same order as before)
+set -- \
+	"rsync://mirror.esc7.net/openbsd" \
+	"rsync://ftp.spline.de/OpenBSD" \
+	"rsync://ftp.hostserver.de/OpenBSD" \
+	"rsync://ftp.usa.openbsd.org/ftp" \
+	"rsync://mirror.planetunix.net/OpenBSD/" \
+	"rsync://mirror.leaseweb.com/openbsd/"
+osmirror_pick_rsync_obstyle "$ob_rsync_probe" "$@" || true
 
 # should be static, rm to refresh
 for d in $(rclone_lsrmt | egrep "^[0-9].[0-9]/$")
 do
 	cksys
 	d=${d%*/}
-	dname="$(echo "$d"|sed 's,/,_,g')"
+	dname=$(osmirror_path_to_dname "$d")
 	if ! [ -f $cachedir/${dname}.xz ]; then
 		rclone_cache_dir "$d"
 	fi
 done
 
-# strip freq dirs off 'all' bits
+# strip freq dirs off 'all' bits (unused; kept for parity with prior script)
 stripall() {
 	awk '/ (ftplist|timestamp|Changelogs|OpenSSH\/portable|patches|snapshots)/{next}{print}'
 }
@@ -156,7 +92,7 @@ for path in {ftplist,timestamp,Changelogs,OpenSSH/portable,patches,snapshots}
 do
 	cksys
 	rsync_cache_dir "$path"
-done 
+done
 
 cksys
 xzcat $cachedir/*.xz | \
