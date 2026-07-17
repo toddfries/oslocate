@@ -15,6 +15,7 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 . "${0%/*}/locate-lib"
+. "${0%/*}/osmirror-lib"
 
 # rclone lsl munge date|size_hex|path — same generation as oblocate hybrid
 # era sibling tooling; no earlier format commits in this repo (added 2026-07-16).
@@ -46,56 +47,16 @@ fi
 pidfile_acquire
 mkdir -p $cachedir
 
-# ---------------------------------------------------------------------------
-# Helpers (same shape as oblocate; remote name is an argument for multi-rmt)
-# ---------------------------------------------------------------------------
-
-compress() {
-	xz -9
-}
-
-# List one level of directories on an rclone remote.
-# Usage: rclone_lsrmt <rmt> [subdir]
-# Prints basenames with trailing / (same as oblocate's rclone_lsrmt output style).
+# Thin wrappers → osmirror-lib (multi-remote NetBSD)
 rclone_lsrmt() {
-	local rmt="$1" rdir="${2:-}"
-	rclone lsd "$rmt:$rdir" | \
-		awk '{ printf "%s/\n", $5 }'
+	osmirror_rclone_lsrmt "$1" "$2"
 }
-
-# Cache one remote directory as $cachedir/<sanitized_path>.xz
-# Usage: rclone_cache_dir <rmt> <relpath>
 rclone_cache_dir() {
-	local rmt="$1" d="$2"
-	local dname
-
-	dname="$(echo "$d" | sed 's,/,_,g')"
-	echo "caching rmt dir $d"
-	tmpwrite="${cachedir}/.${dname}.xz"
-	rclone lsl "$rmt:$d" 2>/dev/null | \
-		rclone_mungeforlocate "$d" | \
-		compress > "$tmpwrite" && \
-		mv -f "$tmpwrite" "${cachedir}/${dname}.xz" || {
-			rm -f "$tmpwrite"
-			tmpwrite=""
-			exit 1
-		}
-	tmpwrite=""
-}
-
-# Same record format as oblocate: date+time|size_hex|path
-rclone_mungeforlocate() {
-	awk -v d="$1" '
-		{
-			gsub("-","",$2);
-			gsub(":","",$3);
-			gsub("\\.[0-9]+","",$3);
-			printf "%s%s|%x|%s/%s\n",$2,$3,$1,d,$4;
-		}'
+	osmirror_rclone_cache_dir "$1" "$2" || exit 1
 }
 
 # ---------------------------------------------------------------------------
-# NetBSD mirror walk (layout-specific)
+# NetBSD mirror walk (layout-specific config)
 # ---------------------------------------------------------------------------
 
 # Release trees (static once cached; rm shard to refresh)
@@ -103,14 +64,13 @@ for d in $(rclone_lsrmt "$nb_release_rmt" | egrep "^NetBSD-[0-9][0-9]*\.[0-9]")
 do
 	cksys
 	d=${d%/}
-	dname="$(echo "$d" | sed 's,/,_,g')"
+	dname=$(osmirror_path_to_dname "$d")
 	if ! [ -f "$cachedir/${dname}.xz" ]; then
 		rclone_cache_dir "$nb_release_rmt" "$d"
 	fi
 done
 
-# Package sets: two-level walk under nb-pkg-https (e.g. arch / set)
-# Fixed: old script had "exit 1" after the first pair, aborting the full -B.
+# Package sets: two-level walk under nb-pkg-https
 for d in $(rclone_lsrmt "$nb_pkg_rmt")
 do
 	cksys
@@ -122,14 +82,14 @@ do
 		p2=${p2%/}
 		ptmp="$d/$p2"
 		echo "pkg-https $ptmp>"
-		dname="$(echo "$ptmp" | sed 's,/,_,g')"
+		dname=$(osmirror_path_to_dname "$ptmp")
 		if ! [ -f "$cachedir/${dname}.xz" ]; then
 			rclone_cache_dir "$nb_pkg_rmt" "$ptmp"
 		fi
 	done
 done
 
-# Volatile / frequently updated top-level dirs (refresh every -B)
+# Volatile top-level dirs (refresh every -B)
 for path in arch NetBSD-current NetBSD-daily images install-images \
 	iso misc packages releng security torrent
 do
@@ -148,19 +108,12 @@ for d in $(rclone_lsrmt "$nb_release_rmt" NetBSD-archive)
 do
 	cksys
 	d=${d%/}
-	dname="$(echo "NetBSD-archive_${d}" | sed 's,/,_,g')"
+	dname=$(osmirror_path_to_dname "NetBSD-archive_${d}")
 	if ! [ -f "$cachedir/${dname}.xz" ]; then
 		rclone_cache_dir "$nb_release_rmt" "NetBSD-archive/$d"
 	fi
 done
 
-# ---------------------------------------------------------------------------
-# Assemble locate db (same pattern as oblocate; tmpwrite for trap cleanup)
-# ---------------------------------------------------------------------------
+# Assemble (tmpwrite for trap cleanup)
 cksys
-tmpwrite=".$dbname"
-xzcat $cachedir/*.xz | \
-	$sort -u | \
-	/usr/libexec/locate.mklocatedb > ".$dbname" && \
-	mv -f ".$dbname" "$dbname"
-tmpwrite=""
+osmirror_assemble_db "$dbname"
